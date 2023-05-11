@@ -227,7 +227,7 @@ if __name__ == '__main__':
     parser.add_argument("--ckpt", required=True, help="path to the checkpoint or checkpoint directory to load. If not set, the latest checkpoint from the model directory is loaded")
     parser.add_argument("--src", required=True, help="path to the file containing source test sentences")
     parser.add_argument("--sim", required=False, help="path to the file containing similar source/target/score sentences")
-    parser.add_argument("--pred", default=None, required=False, help="path to the LR IT predicton model")
+    parser.add_argument("--pred", default=None, required=False, help="path to the LR IT prediction model")
     parser.add_argument("--it", type=int, nargs="+", default=[], help="run inference after learning during these many iterations")
     parser.add_argument("--lr", type=float, nargs="+", default=[], help="run inference after learning using these many lr values")
     parser.add_argument("--optim", default="SGD", help="optimizer name")
