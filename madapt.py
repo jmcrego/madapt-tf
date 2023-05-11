@@ -47,8 +47,7 @@ class mAdapt():
         ckpt = tf.train.Checkpoint(model=self.mod, optimizer=self.opt) #ckpt only used when loading model/optimizer (no need to save or restore anymore)
         ckpt.restore(checkpoint_path) #copies the variables of the model/optimizer from the checkpoint to self.mod
         toc = time.time()
-        logging.debug('Load/initialize base model/optimizer took {:.2f} sec'.format(toc-tic))
-        
+        logging.debug('Load/initialize base model/optimizer took {:.2f} sec'.format(toc-tic))        
         tic = time.time()
         self.is_base = True
         self.mod_base = copy.deepcopy(self.mod) #copy of the base model
@@ -77,17 +76,18 @@ class mAdapt():
         toc =  time.time()
         logging.debug('Building tf graph took {:.3f} sec'.format(toc-tic))
 
+        
     def __call__(self, idx, src, sim, lr, it, optim):
         if self.predLrIt is not None:
             self.inference(idx, src, sim, optim) # mode inference: predicts lr and it, adapts accordingly and translates 
         else:
             self.examples(idx, src, sim, lr, it, optim) # mode generation of examples
 
+            
     def inference(self, idx, src, sim, optim):
         logging.debug('mode inference idx={}'.format(idx))
         similar_src, similar_tgt, similar_scr = sim
         lr, it = self.predLrIt(src, similar_src, similar_tgt, similar_scr)
-        self.restore_base(None, None)
         if len(similar_src) and lr > 0. and it > 0:  ### must microadapt
             dataset_training = self.build_dataset(similar_src, similar_tgt, True)
             self.restore_base(optim, lr)
@@ -99,6 +99,8 @@ class mAdapt():
                 logging.debug('training step took {:.3f} sec'.format(toc-tic))
                 self.t_train += toc - tic
                 self.n_train += 1
+        else:
+            self.restore_base(None, None)
         ### translate
         tic = time.time()
         dataset_inference = self.build_dataset([src], [src], False)
@@ -186,15 +188,15 @@ class mAdapt():
 
     def restore_base(self, opt_name, lr):
         #if self.mod != self.mod_base: #comparing the value of two objects
-        if not self.is_base:
+        if not self.is_base: #restore the base model
             tic = time.time()
-            self.mod = copy.deepcopy(self.mod_base) #restore the base model
+            self.mod = copy.deepcopy(self.mod_base)
             self.is_base = True
             toc = time.time()
             logging.debug('restore model took {:.3f} sec'.format(toc-tic))
             self.t_mod_restore += toc - tic
             self.n_mod_restore += 1
-        if opt_name is not None and lr is not None: #i wont use the optimizer
+        if opt_name is not None and lr is not None:
             tic = time.time()
             self.opt = onmt.optimizers.utils.make_optimizer(opt_name, learning_rate=lr)
             toc = time.time()
