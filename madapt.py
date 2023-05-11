@@ -4,6 +4,7 @@ tic = time.time()
 import sys
 import opennmt as onmt
 import pyonmttok
+from inputer import similars, inputs
 from opennmt import config as config_util
 from opennmt.models import catalog
 import tensorflow as tf
@@ -33,48 +34,6 @@ def utf_decoding(pred, token):
     else:
         return sentence
 
-class inputs():
-    def __init__(self, fsrc):
-        self.fsrc = fsrc
-        self.SRC = []
-        if fsrc is not None:
-            with open(fsrc, 'r') as f:
-                self.SRC = f.readlines()
-
-    def __call__(self, idx):
-        l = self.SRC[idx].rstrip()
-        return l
-
-    def __len__(self):
-        return len(self.SRC)
-    
-class similars():
-
-    def __init__(self, fsim):
-        self.fsim = fsim
-        self.SIM = []
-        if fsim is not None:
-            with open(fsim, 'r') as f:
-                self.SIM = f.readlines()
-
-    def __call__(self, idx):
-        similar_src = []
-        similar_tgt = []
-        similar_score = []
-        if self.fsim is not None and idx < len(self.SIM):
-            l = self.SIM[idx].rstrip()
-            if len(l): #line contains similars
-                l = l.split('\t')
-                if len(l) % 3 != 0:
-                    logging.error('bad formatted similars line {}: {}'.format(idx, l))
-                    sys.exit()
-                for k in range(0,len(l),3):
-                    similar_score.append(float(l[k]))
-                    similar_src.append(l[k+1])
-                    similar_tgt.append(l[k+2])
-                    break #consider only the first TM entry
-        return similar_src, similar_tgt, similar_score
-    
 class mAdapt():
     
     def __init__(self, config_file, checkpoint_path):
