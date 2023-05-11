@@ -5,6 +5,7 @@ import sys
 import opennmt as onmt
 import pyonmttok
 from inputer import similars, inputs
+from predLrIt import  predLrIt
 from opennmt import config as config_util
 from opennmt.models import catalog
 import tensorflow as tf
@@ -19,11 +20,6 @@ def output_example(idx, hyp, opt, lr=0.0, it=0, sim=0.0, nsim=0, similar_tgt=[])
     print("{}\t{}\t{:.9f}\t{}\t{:.4f}\t{}\t{}\t{}".format(idx, it, lr, opt, sim, nsim, hyp, '\t'.join(similar_tgt)))
     sys.stdout.flush()
     
-def predict_lr_it(source, similar_src, similar_tgt, similar_score):
-    lr = 0.
-    it = 0
-    return lr, it
-    
 def utf_decoding(pred, token):
     for tokens, length in zip(pred["tokens"].numpy(), pred["length"].numpy()):
         sentence = b" ".join(tokens[0][: length[0]])
@@ -36,7 +32,8 @@ def utf_decoding(pred, token):
 
 class mAdapt():
     
-    def __init__(self, config_file, checkpoint_path):
+    def __init__(self, config_file, checkpoint_path, fpred=None):
+        self.predLrIt = predLrIt(fpred) if fpred is not None else None
         self.config = config_util.load_config(config_file) # Load and merge run configurations.
         tic = time.time()
         self.beam_width = self.config['params']['beam_width'] if 'params' in self.config and 'beam_width' in self.config['params'] else 1
@@ -79,20 +76,64 @@ class mAdapt():
         self.training_step_fn.get_concrete_function()        
         toc =  time.time()
         logging.debug('Building tf graph took {:.3f} sec'.format(toc-tic))
-        
+
     def __call__(self, idx, src, sim, lr, it, optim):
-        logging.debug('idx: {}'.format(idx))
-        similar_src, similar_tgt, similar_score = sim
-        ###
-        ### mode inference: predicts lr and it, adapts accordingly and translates
-        ###
-        if len(lr) == 0 or len(it) == 0:
-            logging.debug('mode inference')
-            lr, it = predict_lr_it(src, similar_src, similar_tgt, similar_score)
-            if len(similar_src) and lr > 0. and it > 0:  ### must microadapt
-                dataset_training = self.build_dataset(similar_src, similar_tgt, True)
-                self.restore_base(optim, lr)
-                for curr_it in range(it):
+        if self.predLrIt is not None:
+            self.inference(idx, src, sim, optim) # mode inference: predicts lr and it, adapts accordingly and translates 
+        else:
+            self.examples(idx, src, sim, lr, it, optim) # mode generation of examples
+
+    def inference(self, idx, src, sim, optim):
+        logging.debug('mode inference idx={}'.format(idx))
+        similar_src, similar_tgt, similar_scr = sim
+        lr, it = self.predLrIt(src, similar_src, similar_tgt, similar_scr)
+        self.restore_base(None, None)
+        if len(similar_src) and lr > 0. and it > 0:  ### must microadapt
+            dataset_training = self.build_dataset(similar_src, similar_tgt, True)
+            self.restore_base(optim, lr)
+            for curr_it in range(it):
+                tic = time.time()
+                _ = self.training_step_fn(next(iter(dataset_training)))
+                self.is_base = False
+                toc = time.time()
+                logging.debug('training step took {:.3f} sec'.format(toc-tic))
+                self.t_train += toc - tic
+                self.n_train += 1
+        ### translate
+        tic = time.time()
+        dataset_inference = self.build_dataset([src], [src], False)
+        target_tokens, target_lengths = self.predict_fn(next(iter(dataset_inference)))
+        toc = time.time()
+        logging.debug('inference took {:.3f} sec'.format(toc-tic))
+        self.t_infer += toc - tic
+        self.n_infer += 1
+        hyp = utf_decoding({'tokens':target_tokens, 'length':target_lengths}, self.tgt_tokenizer)
+        logging.debug('hyp: {}'.format(hyp))
+        output_example(idx, hyp, '-', lr=0.0, it=0, sim=0., nsim=0, similar_tgt=[])
+                
+        
+    def examples(self, idx, src, sim, lr, it, optim):
+        logging.debug('mode examples idx={}'.format(idx))
+        similar_src, similar_tgt, similar_scr = sim
+        if len(similar_src) == 0:
+            return
+        dataset_inference = self.build_dataset([src], [src], False)
+        ### inference with base model ###    
+        self.restore_base(None, None)
+        tic = time.time()
+        target_tokens, target_lengths = self.predict_fn(next(iter(dataset_inference)))
+        toc = time.time()
+        logging.debug('inference took {:.3f} sec'.format(toc-tic))
+        self.t_infer += toc - tic
+        self.n_infer += 1
+        hyp = utf_decoding({'tokens':target_tokens, 'length':target_lengths}, self.tgt_tokenizer)
+        output_example(idx, hyp, '-', lr=0.0, it=0, sim=0., nsim=0, similar_tgt=[])
+        ### micro-adaptation ###
+        if len(lr) and len(it):
+            dataset_training = self.build_dataset(similar_src, similar_tgt, True)
+            for curr_lr in lr:
+                self.restore_base(optim, curr_lr)
+                for curr_it in range(it[-1]):
                     tic = time.time()
                     _ = self.training_step_fn(next(iter(dataset_training)))
                     self.is_base = False
@@ -100,59 +141,17 @@ class mAdapt():
                     logging.debug('training step took {:.3f} sec'.format(toc-tic))
                     self.t_train += toc - tic
                     self.n_train += 1
-            else: ### do not microadapt, use base model
-                self.restore_base(None, None)
-            tic = time.time()
-            dataset_inference = self.build_dataset([src], [src], False)
-            target_tokens, target_lengths = self.predict_fn(next(iter(dataset_inference)))
-            toc = time.time()
-            logging.debug('inference took {:.3f} sec'.format(toc-tic))
-            self.t_infer += toc - tic
-            self.n_infer += 1
-            hyp = utf_decoding({'tokens':target_tokens, 'length':target_lengths}, self.tgt_tokenizer)
-            logging.debug('hyp: {}'.format(hyp))
-            output_example(idx, hyp, '-', lr=0.0, it=0, sim=0., nsim=0, similar_tgt=[])
-            return
-        ###
-        ### mode generation of examples
-        ###
-        if len(similar_src):
-            dataset_inference = self.build_dataset([src], [src], False)
-            logging.debug('mode µadaptation examples')
-            ### inference with base model ###    
-            self.restore_base(None, None)
-            tic = time.time()
-            target_tokens, target_lengths = self.predict_fn(next(iter(dataset_inference)))
-            toc = time.time()
-            logging.debug('inference took {:.3f} sec'.format(toc-tic))
-            self.t_infer += toc - tic
-            self.n_infer += 1
-            hyp = utf_decoding({'tokens':target_tokens, 'length':target_lengths}, self.tgt_tokenizer)
-            output_example(idx, hyp, '-', lr=0.0, it=0, sim=0., nsim=0, similar_tgt=[])
-            
-            ### micro-adaptation ###
-            if len(lr) and len(it):
-                dataset_training = self.build_dataset(similar_src, similar_tgt, True)
-                for curr_lr in lr:
-                    self.restore_base(optim, curr_lr)
-                    for curr_it in range(it[-1]):
+                    if curr_it + 1 in it:
                         tic = time.time()
-                        _ = self.training_step_fn(next(iter(dataset_training)))
-                        self.is_base = False
+                        target_tokens, target_lengths = self.predict_fn(next(iter(dataset_inference)))
                         toc = time.time()
-                        logging.debug('training step took {:.3f} sec'.format(toc-tic))
-                        self.t_train += toc - tic
-                        self.n_train += 1
-                        if curr_it + 1 in it:
-                            tic = time.time()
-                            target_tokens, target_lengths = self.predict_fn(next(iter(dataset_inference)))
-                            toc = time.time()
-                            logging.debug('inference took {:.3f} sec'.format(toc-tic))
-                            self.t_infer += toc - tic
-                            self.n_infer += 1
-                            hyp = utf_decoding({'tokens':target_tokens, 'length':target_lengths}, self.tgt_tokenizer)
-                            output_example(idx, hyp, optim, lr=curr_lr, it=curr_it+1, sim=similar_score[0], nsim=len(similar_src), similar_tgt=similar_tgt)
+                        logging.debug('inference took {:.3f} sec'.format(toc-tic))
+                        self.t_infer += toc - tic
+                        self.n_infer += 1
+                        hyp = utf_decoding({'tokens':target_tokens, 'length':target_lengths}, self.tgt_tokenizer)
+                        output_example(idx, hyp, optim, lr=curr_lr, it=curr_it+1, sim=similar_scr[0], nsim=len(similar_src), similar_tgt=similar_tgt)
 
+                        
     def build_dataset(self, source, target, training):
         logging.debug('build_dataset source={} target={} training={}'.format(source,target,training))
         dataset_ = tf.data.Dataset.zip( (tf.data.Dataset.from_tensor_slices(source), tf.data.Dataset.from_tensor_slices(target)) )
@@ -192,7 +191,6 @@ class mAdapt():
             self.mod = copy.deepcopy(self.mod_base) #restore the base model
             self.is_base = True
             toc = time.time()
-            logging.debug('mod_base={} mod={}'.format(id(self.mod_base),id(self.mod)))
             logging.debug('restore model took {:.3f} sec'.format(toc-tic))
             self.t_mod_restore += toc - tic
             self.n_mod_restore += 1
@@ -227,6 +225,7 @@ if __name__ == '__main__':
     parser.add_argument("--ckpt", required=True, help="path to the checkpoint or checkpoint directory to load. If not set, the latest checkpoint from the model directory is loaded")
     parser.add_argument("--src", required=True, help="path to the file containing source test sentences")
     parser.add_argument("--sim", required=False, help="path to the file containing similar source/target/score sentences")
+    parser.add_argument("--pred", default=None, required=False, help="path to the LR IT predicton model")
     parser.add_argument("--it", type=int, nargs="+", default=[], help="run inference after learning during these many iterations")
     parser.add_argument("--lr", type=float, nargs="+", default=[], help="run inference after learning using these many lr values")
     parser.add_argument("--optim", default="SGD", help="optimizer name")
@@ -243,8 +242,8 @@ if __name__ == '__main__':
     t_ini = time.time()
 
     src = inputs(args.src)
-    sim = similars(args.sim)    
-    ma = mAdapt(args.cfg, args.ckpt)
+    sim = similars(args.sim)
+    ma = mAdapt(args.cfg, args.ckpt, args.pred)
     for idx in range(len(src)):
         ma(idx+1, src(idx), sim(idx), args.lr, args.it, args.optim)
     ma.report()
