@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import logging
 
 class inputs():
     def __init__(self, fsrc):
@@ -7,6 +8,7 @@ class inputs():
         if fsrc is not None:
             with open(fsrc, 'r') as f:
                 self.SRC = f.readlines()
+        logging.info('read {} lines from {}'.format(len(self.SRC),fsrc))
 
     def __call__(self, idx):
         l = self.SRC[idx].rstrip()
@@ -25,12 +27,13 @@ class similars():
         if fsim is not None:
             with open(fsim, 'r') as f:
                 self.SIM = f.readlines()
+        logging.info('read {} lines from {}'.format(len(self.SIM),fsim))
 
     def __call__(self, idx):
         src = []
         tgt = []
         scr = []
-        if self.fsim is not None and idx < len(self.SIM):
+        if idx < len(self.SIM):
             l = self.SIM[idx].rstrip()
             if len(l): #line contains similars
                 l = l.split('\t')
@@ -39,7 +42,7 @@ class similars():
                     sys.exit()
                 for k in range(0,len(l),3):
                     s = float(l[k])
-                    if s >= self.min_s:
+                    if s < self.min_s:
                         break
                     scr.append(s)
                     src.append(l[k+1])
@@ -47,3 +50,7 @@ class similars():
                     if self.max_n > 0 and len(src) >= self.max_n:
                         break 
         return src, tgt, scr
+
+    def __len__(self):
+        return len(self.SIM)
+    

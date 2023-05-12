@@ -42,7 +42,7 @@ class mAdapt():
         self.mod = config_util.load_model(self.config["model_dir"]) #load model structure
         self.mod.initialize(self.config['data'], params=self.config['params']) #indicates data configuration and other hyperparameters
         ### optimizer
-        self.opt = self.mod.get_optimizer() #i get the optimizer used to train the base model since ckpt.restore needs it... it will never be used
+        self.opt = onmt.optimizers.utils.make_optimizer('SGD', learning_rate=0.001) #self.mod.get_optimizer() #i get the optimizer used to train the base model since ckpt.restore needs it... it will never be used
         self.mod.create_variables(self.opt) #creates the parameters of the model/optimizer (otherwise they may be created at first usage)
         ckpt = tf.train.Checkpoint(model=self.mod, optimizer=self.opt) #ckpt only used when loading model/optimizer (no need to save or restore anymore)
         ckpt.restore(checkpoint_path) #copies the variables of the model/optimizer from the checkpoint to self.mod
@@ -51,7 +51,6 @@ class mAdapt():
         tic = time.time()
         self.is_base = True
         self.mod_base = copy.deepcopy(self.mod) #copy of the base model
-        logging.debug('mod_base={} mod={}'.format(id(self.mod_base),id(self.mod)))
         toc = time.time()
         logging.debug('Copy base model took {:.2f} sec'.format(toc-tic))
 
