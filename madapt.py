@@ -8,6 +8,8 @@ from inputer import similars, inputs
 from predLrIt import  predLrIt
 from opennmt import config as config_util
 from opennmt.models import catalog
+import numpy as np
+import random
 import tensorflow as tf
 import tensorflow_addons as tfa
 import copy
@@ -65,9 +67,9 @@ class mAdapt():
         self.n_mod_restore = 0
         ### i use fake datasets to build only once the graph functions (tf.function)
         tic =  time.time()
-        dataset_inference = self.build_dataset(['fake'], ['fake'], False)
+        dataset_inference = self.build_dataset(['fake1', 'fake2'], ['fake1', 'fake2'], False)
         self.predict_fn = tf.function(self.predict, input_signature=(dataset_inference.element_spec,))
-        dataset_training = self.build_dataset(['fake'], ['fake'], True)
+        dataset_training = self.build_dataset(['fake1', 'fake2'], ['fake1', 'fake2'], True)
         self.training_step_fn = tf.function(self.training_step, input_signature=(dataset_training.element_spec,))
         ### i force to build the graph of the entire model
         self.predict_fn.get_concrete_function()
@@ -78,12 +80,12 @@ class mAdapt():
         
     def __call__(self, idx, src, sim, lr, it, optim):
         if self.predLrIt is not None:
-            self.inference(idx, src, sim, optim) # mode inference: predicts lr and it, adapts accordingly and translates 
+            self.mode_inference(idx, src, sim, optim) # mode inference: predicts lr and it, adapts accordingly and translates 
         else:
-            self.examples(idx, src, sim, lr, it, optim) # mode generation of examples
+            self.mode_examples(idx, src, sim, lr, it, optim) # mode generation of examples
 
             
-    def inference(self, idx, src, sim, optim):
+    def mode_inference(self, idx, src, sim, optim):
         logging.debug('mode inference idx={}'.format(idx))
         similar_src, similar_tgt, similar_scr = sim
         lr, it = self.predLrIt(src, similar_src, similar_tgt, similar_scr)
@@ -92,10 +94,10 @@ class mAdapt():
             self.restore_base(optim, lr)
             for curr_it in range(it):
                 tic = time.time()
-                _ = self.training_step_fn(next(iter(dataset_training)))
+                loss = self.training_step_fn(next(iter(dataset_training)))
                 self.is_base = False
                 toc = time.time()
-                logging.debug('training step took {:.3f} sec'.format(toc-tic))
+                logging.debug('training step took {:.3f} sec with loss={}'.format(toc-tic,loss))
                 self.t_train += toc - tic
                 self.n_train += 1
         else:
@@ -113,7 +115,7 @@ class mAdapt():
         output_example(idx, hyp, '-', lr=0.0, it=0, sim=0., nsim=0, similar_tgt=[])
                 
         
-    def examples(self, idx, src, sim, lr, it, optim):
+    def mode_examples(self, idx, src, sim, lr, it, optim):
         logging.debug('mode examples idx={}'.format(idx))
         similar_src, similar_tgt, similar_scr = sim
         if len(similar_src) == 0:
@@ -136,10 +138,10 @@ class mAdapt():
                 self.restore_base(optim, curr_lr)
                 for curr_it in range(it[-1]):
                     tic = time.time()
-                    _ = self.training_step_fn(next(iter(dataset_training)))
+                    loss = self.training_step_fn(next(iter(dataset_training)))
                     self.is_base = False
                     toc = time.time()
-                    logging.debug('training step took {:.3f} sec'.format(toc-tic))
+                    logging.debug('training step took {:.3f} sec with loss={}'.format(toc-tic,loss))
                     self.t_train += toc - tic
                     self.n_train += 1
                     if curr_it + 1 in it:
@@ -156,7 +158,7 @@ class mAdapt():
     def build_dataset(self, source, target, training):
         logging.debug('build_dataset source={} target={} training={}'.format(source,target,training))
         dataset_ = tf.data.Dataset.zip( (tf.data.Dataset.from_tensor_slices(source), tf.data.Dataset.from_tensor_slices(target)) )
-        dataset_tensors = dataset_.apply(onmt.data.training_pipeline(batch_size=len(source), batch_type="examples", process_fn=lambda source, target: self.mod.examples_inputter.make_features((source, target), training=training)))
+        dataset_tensors = dataset_.apply(onmt.data.training_pipeline(batch_size=10, batch_type="examples",process_fn=lambda source, target: self.mod.examples_inputter.make_features((source, target), training=training)))
         return dataset_tensors
 
     def training_step(self, batch):
@@ -192,14 +194,14 @@ class mAdapt():
             self.mod = copy.deepcopy(self.mod_base)
             self.is_base = True
             toc = time.time()
-            logging.debug('restore model took {:.3f} sec'.format(toc-tic))
+            logging.debug('restore model base took {:.3f} sec'.format(toc-tic))
             self.t_mod_restore += toc - tic
             self.n_mod_restore += 1
         if opt_name is not None and lr is not None:
             tic = time.time()
             self.opt = onmt.optimizers.utils.make_optimizer(opt_name, learning_rate=lr)
             toc = time.time()
-            logging.debug('restore optimizer took {:.3f} sec'.format(toc-tic))
+            logging.debug('restore optimizer {} {} took {:.3f} sec'.format(opt_name,lr,toc-tic))
             self.t_opt_restore += toc - tic
             self.n_opt_restore += 1
 
@@ -230,9 +232,14 @@ if __name__ == '__main__':
     parser.add_argument("--it", type=int, nargs="+", default=[], help="run inference after learning during these many iterations")
     parser.add_argument("--lr", type=float, nargs="+", default=[], help="run inference after learning using these many lr values")
     parser.add_argument("--optim", default="SGD", help="optimizer name")
+    parser.add_argument("--seed", type=int, default="12345", help="seed for randomness")
     parser.add_argument('--debug', action='store_true', help='debug mode')
     args = parser.parse_args()
 
+    np.random.seed(args.seed)
+    random.seed(args.seed)
+    tf.random.set_seed(args.seed)
+    
     if (len(args.it) and not len(args.lr)) or (len(args.lr) and not len(args.it)):
         logging.error('missing --it OR --lr option')
         sys.exit()
